@@ -1,0 +1,45 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch: # 支持在网页手动触发打包
+
+jobs:
+  build:
+    runs-on: macos-latest # 使用 GitHub 官方提供的 macOS 云主机
+
+    steps:
+      # 1. 拉取指定分支代码
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: 'work/turx/background-location'
+
+      # 2. 设置 Xcode 环境
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      # 3. 编译并归档项目（非签名模式，适合 TrollStore/Sideloadly 侧载）
+      - name: Build Archive
+        run: |
+          xcodebuild archive \
+            -project kdeconnect-ios.xcodeproj \
+            -scheme kdeconnect-ios \
+            -destination "generic/platform=iOS" \
+            -archivePath ./build/kdeconnect.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      # 4. 生成未签名的 .ipa 安装包
+      - name: Create IPA Package
+        run: |
+          mkdir -p Payload
+          cp -r ./build/kdeconnect.xcarchive/Products/Applications/*.app Payload/
+          zip -r kdeconnect-unsigned.ipa Payload/
+
+      # 5. 上传 .ipa 文件到 GitHub Artifacts 供下载
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdeconnect-unsigned-ipa
+          path: kdeconnect-unsigned.ipa
