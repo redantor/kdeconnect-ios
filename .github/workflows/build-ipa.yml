@@ -1,78 +1,83 @@
-name: Build iOS IPA
+
+name: Build KDE Connect iOS IPA
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
+    name: Build IPA
     runs-on: macos-latest
 
     steps:
-      # 使用指定 node24 兼容标记的官方步骤
-      - name: Checkout Code
+      - name: Checkout background-location branch
         uses: actions/checkout@v4
         with:
-          submodules: recursive # 确保子模块（如果有）被完整拉取
+          ref: work/turx/background-location
+          fetch-depth: 0
 
-      - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode.app
-
-      # 检查项目目录结构（会在日志里打印，方便定位是 .xcodeproj 还是 .xcworkspace）
-      - name: Inspect Project Directory
+      - name: Show Xcode version
         run: |
-          ls -la
+          xcodebuild -version
+          xcode-select -p
 
-      # 尝试自动定位 Workspace 或 Project 并进行构建
-      - name: Build Archive
+      - name: List project files
         run: |
-          # 1. 优先检查是否存在 .xcworkspace
-          if [ -d "*.xcworkspace" ] || [ -d "kdeconnect-ios.xcworkspace" ]; then
-            WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
-            echo "Found Workspace: $WORKSPACE"
-            
-            # 获取 Workspace 下的第一个 Scheme
-            SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | xargs | awk '{print $1}')
-            echo "Detected Scheme: $SCHEME"
-            
-            xcodebuild archive \
-              -workspace "$WORKSPACE" \
-              -scheme "${SCHEME:-kdeconnect-ios}" \
-              -destination "generic/platform=iOS" \
-              -archivePath ./build/kdeconnect.xcarchive \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGNING_REQUIRED=NO
-          else
-            # 2. 如果只有 .xcodeproj
-            PROJECT=$(ls -d *.xcodeproj | head -n 1)
-            echo "Found Project: $PROJECT"
-            
-            # 强制列出所有可用 Schemes 打印在日志中
-            xcodebuild -list -project "$PROJECT"
-            
-            # 自动抓取非空 Scheme，抓不到则回退到项目名
-            SCHEME=$(xcodebuild -list -project "$PROJECT" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | tr -d ' ' | grep -v '^$' | head -n 1)
-            echo "Detected Scheme: $SCHEME"
-            
-            xcodebuild archive \
-              -project "$PROJECT" \
-              -scheme "${SCHEME:-kdeconnect-ios}" \
-              -destination "generic/platform=iOS" \
-              -archivePath ./build/kdeconnect.xcarchive \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGNING_REQUIRED=NO
+          find . -maxdepth 3 \
+            \( -name "*.xcodeproj" -o -name "*.xcworkspace" -o -name "Package.swift" \) \
+            -print
+
+      - name: Build application
+        run: |
+          set -e
+
+          PROJECT=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n 1)
+
+          if [ -z "$PROJECT" ]; then
+            echo "No Xcode project found"
+            exit 1
           fi
 
-      # 打包成未签名的 .ipa
-      - name: Create IPA Package
-        run: |
-          mkdir -p Payload
-          cp -r ./build/kdeconnect.xcarchive/Products/Applications/*.app Payload/
-          zip -r kdeconnect-unsigned.ipa Payload/
+          echo "Using project: $PROJECT"
 
-      - name: Upload IPA Artifact
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "KDE Connect" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Create unsigned IPA
+        run: |
+          set -e
+
+          APP_PATH=$(find build/Build/Products -name "*.app" -type d | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found"
+            find build -type f | head -100
+            exit 1
+          fi
+
+          echo "Found app: $APP_PATH"
+
+          mkdir -p Payload
+
+          cp -R "$APP_PATH" Payload/
+
+          mkdir -p artifacts
+
+          zip -r artifacts/KDEConnect-background-location-unsigned.ipa Payload
+
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: kdeconnect-unsigned-ipa
-          path: kdeconnect-unsigned.ipa
+          name: KDEConnect-background-location-unsigned-ipa
+          path: artifacts/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
