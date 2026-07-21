@@ -1,45 +1,54 @@
 name: Build iOS IPA
 
 on:
-  workflow_dispatch: # 支持在网页手动触发打包
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest # 使用 GitHub 官方提供的 macOS 云主机
+    runs-on: macos-latest
 
     steps:
-      # 1. 拉取指定分支代码
+      # 1. 更新到支持 Node.js 24 的最新 Action 版本
       - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          ref: 'work/turx/background-location'
+        uses: actions/checkout@v4.2.2
 
-      # 2. 设置 Xcode 环境
       - name: Select Xcode Version
         run: sudo xcode-select -s /Applications/Xcode.app
 
-      # 3. 编译并归档项目（非签名模式，适合 TrollStore/Sideloadly 侧载）
+      # 2. 列出并自动寻找可用的 Scheme (防错调试)
+      - name: List Schemes
+        run: |
+          xcodebuild -list -project kdeconnect-ios.xcodeproj
+
+      # 3. 编译 Archive (修复 Scheme 不匹配与未共享问题)
       - name: Build Archive
         run: |
+          # 自动获取 Xcode 项目里的第一个有效 Scheme 名字，防止名称大小写或拼写不符
+          SCHEME=$(xcodebuild -list -project kdeconnect-ios.xcodeproj | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | xargs | awk '{print $1}')
+          echo "Detected Scheme: $SCHEME"
+          
+          # 如果提取为空，则回退使用默认的 kdeconnect-ios
+          IF_SCHEME="${SCHEME:-kdeconnect-ios}"
+
           xcodebuild archive \
             -project kdeconnect-ios.xcodeproj \
-            -scheme kdeconnect-ios \
+            -scheme "$IF_SCHEME" \
             -destination "generic/platform=iOS" \
             -archivePath ./build/kdeconnect.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
-      # 4. 生成未签名的 .ipa 安装包
+      # 4. 打包为未签名 IPA
       - name: Create IPA Package
         run: |
           mkdir -p Payload
           cp -r ./build/kdeconnect.xcarchive/Products/Applications/*.app Payload/
           zip -r kdeconnect-unsigned.ipa Payload/
 
-      # 5. 上传 .ipa 文件到 GitHub Artifacts 供下载
+      # 5. 上传产物 (同样升级到 v4.6.0+ 以消除 Node 警告)
       - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.0
         with:
           name: kdeconnect-unsigned-ipa
           path: kdeconnect-unsigned.ipa
