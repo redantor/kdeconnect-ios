@@ -1,4 +1,3 @@
-
 name: Build KDE Connect iOS IPA
 
 on:
@@ -10,35 +9,79 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      # 1. 下载指定分支
       - name: Checkout background-location branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: work/turx/background-location
           fetch-depth: 0
 
-      - name: Show Xcode version
+      # 2. 显示环境
+      - name: Show build environment
         run: |
+          echo "=== macOS ==="
+          sw_vers
+
+          echo "=== Xcode ==="
           xcodebuild -version
-          xcode-select -p
 
-      - name: List project files
-        run: |
-          find . -maxdepth 3 \
-            \( -name "*.xcodeproj" -o -name "*.xcworkspace" -o -name "Package.swift" \) \
-            -print
+          echo "=== Current branch ==="
+          git branch --show-current
 
-      - name: Build application
+          echo "=== Commit ==="
+          git log -1 --oneline
+
+      # 3. 查找 Xcode 工程
+      - name: Find Xcode project
+        id: project
+        shell: bash
         run: |
           set -e
+
+          echo "=== Xcode projects ==="
+          find . -name "*.xcodeproj" -print
+
+          echo "=== Xcode workspaces ==="
+          find . -name "*.xcworkspace" -print
 
           PROJECT=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n 1)
 
           if [ -z "$PROJECT" ]; then
-            echo "No Xcode project found"
+            echo "::error::No Xcode project found"
             exit 1
           fi
 
-          echo "Using project: $PROJECT"
+          echo "Found project:"
+          echo "$PROJECT"
+
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+
+      # 4. 显示 Scheme 和 Target
+      - name: List Xcode project
+        run: |
+          set +e
+
+          xcodebuild \
+            -project "${{ steps.project.outputs.project }}" \
+            -list
+
+          echo ""
+          echo "=== Detailed project information ==="
+
+          xcodebuild \
+            -project "${{ steps.project.outputs.project }}" \
+            -showBuildSettings \
+            2>&1 | head -300
+
+      # 5. 编译
+      - name: Build IPA
+        run: |
+          set -o pipefail
+
+          PROJECT="${{ steps.project.outputs.project }}"
+
+          echo "Building project:"
+          echo "$PROJECT"
 
           xcodebuild \
             -project "$PROJECT" \
@@ -46,38 +89,70 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
-            -derivedDataPath build \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            | tee build.log
+
+      # 6. 即使编译失败，也上传日志
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-build-log
+          path: |
+            build.log
             build
 
-      - name: Create unsigned IPA
+      # 7. 查找 App
+      - name: Find built app
+        if: success()
+        run: |
+          echo "=== Built applications ==="
+
+          find build \
+            -name "*.app" \
+            -type d \
+            -print
+
+      # 8. 打包 IPA
+      - name: Create IPA
+        if: success()
         run: |
           set -e
 
-          APP_PATH=$(find build/Build/Products -name "*.app" -type d | head -n 1)
+          APP_PATH=$(find build/Build/Products \
+            -name "*.app" \
+            -type d \
+            | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
-            echo "No .app found"
-            find build -type f | head -100
+            echo "::error::No .app found"
             exit 1
           fi
 
-          echo "Found app: $APP_PATH"
+          echo "Found app:"
+          echo "$APP_PATH"
 
+          rm -rf Payload
           mkdir -p Payload
+          mkdir -p artifacts
 
           cp -R "$APP_PATH" Payload/
 
-          mkdir -p artifacts
+          cd Payload
 
-          zip -r artifacts/KDEConnect-background-location-unsigned.ipa Payload
+          zip -r \
+            "../artifacts/KDEConnect-background-location-unsigned.ipa" \
+            "*.app"
 
+      # 9. 上传 IPA
       - name: Upload IPA
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: KDEConnect-background-location-unsigned-ipa
           path: artifacts/*.ipa
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
